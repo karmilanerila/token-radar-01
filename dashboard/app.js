@@ -151,7 +151,7 @@
   }
   // The page recomputes a row from the snapshot figures and checks the number board.json carries.
   function impliedOf(row) {
-    return Math.max(1, Math.round(row.tvl_usd * row.base_multiple * row.growth_multiplier * row.maturity_multiplier * row.token_odds * row.own_token_share));
+    return Math.max(1, Math.round(row.tvl_usd * row.base_multiple * row.token_odds * row.own_token_share));
   }
 
   // ---- shared chrome ----
@@ -185,10 +185,10 @@
     var v = DATA.validation;
     return el('section', { class: 'model-strip' },
       el('h2', { text: 'How implied value is computed' }),
-      el('div', { class: 'formula', text: 'implied = round( TVL x category multiple x (1 + clamp(7d, -60, 120) / 100 x ' + m.growth_weight + ') x (0.7 + min(age, 1095) / 1095 x 0.3) x ' + m.token_odds + ' x ' + m.own_token_share + ' )' }),
+      el('div', { class: 'formula', text: 'implied = round( TVL x category multiple x token odds x ' + m.own_token_share + ' )' }),
       el('p', null,
         el('b', { text: 'Fitted, not hand-picked. ' }),
-        'The size curve and the category multiples are fitted at run time on the snapshot\u2019s own ' + v.comps + ' traded protocols (log mcap = ' + v.global_a + ' + ' + v.global_b + ' x log TVL, R\u00B2 = ' + v.global_r2 + '). Leave-one-out median error ' + v.loo_median_x + 'x; walk-forward median ' + v.walk_forward_median_x + 'x. Token odds and own-token share are flat stated assumptions — a blind test found no signal for them (AUC ' + v.odds_auc_test + ').'
+        'The size curve and the category multiples are fitted at run time on the snapshot\u2019s own ' + v.comps + ' traded protocols (log mcap = ' + v.global_a + ' + ' + v.global_b + ' x log TVL, R\u00B2 = ' + v.global_r2 + '). Token odds are fitted too: a logistic on age plus a category offset, held out at AUC ' + v.odds_auc_agecat_split1 + ' and ' + v.odds_auc_agecat_split2 + ' on two splits. Leave-one-out median error ' + v.loo_median_x + 'x; walk-forward median ' + v.walk_forward_median_x + 'x. The only flat assumption is the own-token share (' + m.own_token_share + ').'
       )
     );
   }
@@ -337,14 +337,20 @@
         'The model is fitted at run time from the snapshot\u2019s own traded protocols — ', el('b', { text: v.comps + ' clean comps' }), ' (one per ticker, positive market cap). ',
         'The size curve is log(mcap) = ', el('code', { text: v.global_a + ' + ' + v.global_b + ' x log(TVL)' }), ', R\u00B2 = ', el('b', { text: String(v.global_r2) }), '. ',
         'Each category\u2019s multiple is the median mcap/TVL of its comps, shrunk toward the global curve by n/(n + ', String(m.shrink_k), ') — categories with fewer than ', String(m.min_category_n), ' comps use the curve alone. ',
-        'Growth and age enter only as small stated priors (weights ', String(m.growth_weight), ' and a 0.7–1.0 maturity range), because blind tests found almost no signal for them.'
+        'Token odds are a logistic on age, fitted at run time on the ', String(v.odds_population), ' protocols that either trade or record no token at all, plus a category offset from each category\u2019s has-token rate (shrunk by n/(n + ', String(m.odds_shrink_k), ')). ',
+        'Age enters the value once, through the odds — never through a second maturity term.'
       ),
       el('h3', { text: 'Held-out validation — the numbers, not adjectives' }),
       el('ul', null,
         el('li', { text: 'Leave-one-out on the fitted value: median error ' + v.loo_median_log + ' log units (' + v.loo_median_x + 'x), p80 ' + v.loo_p80_log + ', p90 ' + v.loo_p90_log + '. A held-out protocol\u2019s market cap is typically off by about three and a half times.' }),
-        el('li', { text: 'Walk-forward: fit on protocols listed before 2025-01-01 (n = ' + v.walk_forward_fit_n + '), test on those listed after (n = ' + v.walk_forward_test_n + '): median error ' + v.walk_forward_median_log + ' log units (' + v.walk_forward_median_x + 'x).' }),
-        el('li', { text: 'The shrunk-category model scores median 1.24 in leave-one-out against 1.22 for the global curve alone — the category signal is real (medians span ' + v.category_spread_x + 'x, Liquid Staking 0.041 to Canonical Bridge 1.126) but small-n medians are noisy, so the shrinkage keeps it honest.' }),
-        el('li', { text: 'Token odds: a blind test found NO signal. A logistic on age, log TVL and 7-day growth ranks traded protocols above pre-token ones with AUC ' + v.odds_auc_test + ' on held-out data — worse than a coin flip. Token odds (' + m.token_odds + ') and own-token share (' + m.own_token_share + ') are therefore flat stated assumptions, not fitted terms.' })
+        el('li', { text: 'Leave-one-out rank correlation (Spearman, predicted vs actual market cap): ' + v.loo_spearman + ' for the category model against ' + v.loo_spearman_global + ' for the global curve alone. The category signal is real but small, which is why it is shrunk — raw medians score 0.53 in-sample but 1.61 in leave-one-out.' }),
+        el('li', { text: 'Walk-forward: fit on protocols listed before 2025-01-01 (n = ' + v.walk_forward_fit_n + '), test on those listed after (n = ' + v.walk_forward_test_n + '): median error ' + v.walk_forward_median_log + ' log units (' + v.walk_forward_median_x + 'x), against 1.12 for the global curve alone.' }),
+        el('li', { text: 'Token odds: held-out AUC ' + v.odds_auc_agecat_split1 + ' and ' + v.odds_auc_agecat_split2 + ' on two deterministic splits (age alone: ' + v.odds_auc_age_split1 + ' and ' + v.odds_auc_age_split2 + '). The odds rise with age — 3% of protocols under 180 days record a token, 25% of those over 1,100 days do — and by category, from 3% (Risk Curators) to 48% (Lending). They are a peer benchmark, not a forecast: an old protocol with no token has survived this long without listing.' })
+      ),
+      el('h3', { text: 'Terms tested and dropped — the split test' }),
+      el('ul', null,
+        el('li', { text: 'Seven-day growth as a tilt on the multiple: a fitted slope of ' + v.growth_slope + ' log units per 1% gained ' + v.growth_loo_spearman_gain + ' in leave-one-out Spearman but lost on the walk-forward test (median ' + v.growth_walk_forward_median + ' with it, ' + v.walk_forward_median_log + ' without it), so it does not enter the value. Growth is still shown on the board as a column.' }),
+        el('li', { text: 'A maturity multiplier on age: a fitted age slope on the multiple cut leave-one-out Spearman to ' + v.age_slope_loo_spearman + ', so age enters only through the fitted odds. The round-2 model carried both a maturity term and flat odds; this one fits the odds and drops the rest.' })
       ),
       el('h3', { text: 'Farm verdicts, netted' }),
       el('p', null,
@@ -363,6 +369,7 @@
     var row = DATA.rows.filter(function (r) { return r.slug === state.slug; })[0];
     if (!row) return el('div', { class: 'panel' }, el('div', { class: 'empty' }, el('h2', { text: 'Protocol not found' }), el('p', { text: 'That slug is not on this board.' })));
     var recomputed = impliedOf(row);
+    var agrees = Math.abs(recomputed - row.implied_value_usd) <= Math.max(1, Math.round(row.implied_value_usd * 0.005));
     var steps = farmSteps(row);
     var verdictText = row.verdict === 'FARM' ? 'Farm it: the expected airdrop clears the plan\u2019s cost with margin.'
       : row.verdict === 'THIN' ? 'Thin: the expected airdrop barely clears the plan\u2019s cost — worth it only alongside other positions.'
@@ -380,9 +387,7 @@
           el('div', { class: 'equation' },
             el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
             el('div', null, el('span', { text: 'Category multiple (fitted, shrunk)' }), el('b', { class: 'num', text: 'x ' + row.base_multiple })),
-            el('div', null, el('span', { text: 'Seven-day growth multiplier' }), el('b', { class: 'num', text: 'x ' + row.growth_multiplier })),
-            el('div', null, el('span', { text: 'Maturity multiplier (age)' }), el('b', { class: 'num', text: 'x ' + row.maturity_multiplier })),
-            el('div', null, el('span', { text: 'Token odds (stated assumption)' }), el('b', { class: 'num', text: 'x ' + row.token_odds })),
+            el('div', null, el('span', { text: 'Token odds (fitted: age + category)' }), el('b', { class: 'num', text: 'x ' + row.token_odds })),
             el('div', null, el('span', { text: 'Own-token share (stated assumption)' }), el('b', { class: 'num', text: 'x ' + row.own_token_share })),
             el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
             el('div', null, el('span', { text: 'Bootstrap rank band (200 refits)' }), el('b', { class: 'num', text: '#' + row.rank_band_low + '–' + row.rank_band_high }))
@@ -391,7 +396,7 @@
             el('b', { text: row.verdict + ' — ' + verdictText }),
             el('p', { class: 'note', text: 'Expected airdrop ' + fmtSmall(row.expected_airdrop_usd) + ' · plan cost ' + fmtSmall(row.farm_cost_usd) + ' · net ' + fmtSmall(row.net_usd) + ' · break-even implied value ' + fmtSmall(row.break_even_usd) + '.' })
           ),
-          el('p', { class: 'note', text: 'The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ' — which differs from the board; the data would be stale.') + ' This is an estimate, not a price.' })
+          el('p', { class: 'note', text: 'The page recomputes this row as ' + fmtUsd(recomputed) + (agrees ? ', the same number board.json carries (to the rounding the board shows).' : ' — which differs from the board; the data would be stale.') + ' This is an estimate, not a price.' })
         ),
         el('section', { class: 'panel' },
           el('h2', { text: 'Farm plan' }),

@@ -13,26 +13,39 @@
 //   category multiple = median mcap / TVL per category, shrunk toward the global curve:
 //                      logMult = (n * logMed + K * logGlobal) / (n + K), K = 10;
 //                      categories with fewer than 3 comps fall back to the global curve.
-//   growthMult       = 1 + clamp(change_7d, -60, 120) / 100 * 0.25   (a stated prior)
-//   maturityMult     = 0.7 + min(age, 1095) / 1095 * 0.3             (a stated prior; unknown age 365)
-//   implied          = max(1, round(TVL * exp(logMult) * growthMult * maturityMult
-//                          * TOKEN_ODDS * OWN_TOKEN_SHARE))
+//   token odds       = a logistic on the protocol's age, fitted at run time on the snapshot's
+//                      own record (the 470 protocols that either trade or record no token at
+//                      all), plus a category offset: each category's has-token rate, shrunk
+//                      toward the global rate by n / (n + 5), as a logit offset. Older protocols
+//                      and high-listing categories score higher odds.
+//   implied          = max(1, round(TVL * exp(logMult) * token_odds * OWN_TOKEN_SHARE))
 //
-// TOKEN_ODDS (0.35) and OWN_TOKEN_SHARE (0.20) are flat stated assumptions, not fitted terms:
-// a blind test on this snapshot found NO signal for them (a logistic on age, log TVL and 7-day
-// growth ranks traded protocols above pre-token ones with AUC 0.45 on held-out data — worse than
-// a coin flip), so the model does not pretend to fit them. Growth and age likewise carry almost
-// no signal for the multiple (correlations -0.15 and +0.01), which is why their weights are small
-// priors rather than fitted coefficients. The dashboard shows all of this.
+// Two terms the round-2 model carried were TESTED AND DROPPED, and the dashboard shows why:
+//   - Seven-day growth as a tilt on the multiple: a fitted slope of -0.042 log units per 1%
+//     gained 0.005 in leave-one-out Spearman but LOST on the walk-forward test (median 1.03
+//     without it, 1.12 with it), so it does not enter the value. Growth is still shown on the
+//     board as a column. A growth prior with the wrong sign was worse than none.
+//   - A maturity multiplier on age: a fitted age slope on the multiple hurt leave-one-out
+//     (Spearman 0.407 to 0.393), so age enters the value ONCE, through the fitted token odds,
+//     never twice.
+// OWN_TOKEN_SHARE (0.20) is the one flat stated assumption: the share of a token's value the
+// public float holds. It scales every row alike, so it never changes the ranking; it is
+// labelled as an assumption on the dashboard.
 //
 // Validation, measured offline on the sealed snapshot (2026-11-22) and stated on the dashboard:
 //   global curve: log(mcap) = 6.9646 + 0.5223 * log(TVL), R^2 = 0.194 (size explains ~19%)
-//   leave-one-out on the fitted value: median |log error| 1.22 (3.4x), p80 2.44, p90 3.48
-//   walk-forward (fit on protocols listed before 2025-01-01, test after): median 1.12 (3.1x)
-//   category medians span 27x (Liquid Staking 0.041 to Canonical Bridge 1.126), but with
-//   n = 3..15 per category the medians are noisy: the shrunk-category model (k = 10) scores
-//   median 1.24 in leave-one-out against 1.22 for the global curve alone, so the shrinkage
-//   keeps the category signal without letting a small-n median run the ranking.
+//   leave-one-out on the fitted value: median |log error| 1.24 (3.4x), p80 2.45, p90 3.48
+//   leave-one-out rank correlation (Spearman, predicted vs actual mcap): 0.41 for the
+//   category model against 0.40 for the global curve alone — the category signal is real but
+//   small, which is why it is shrunk, not taken raw (raw medians: 0.53 in-sample, 1.61 LOO).
+//   walk-forward (fit on protocols listed before 2025-01-01, n = 64, test after, n = 31):
+//   median 1.03 (2.8x) for the category model against 1.12 (3.1x) for the global curve alone.
+//   token odds: held-out AUC 0.73 and 0.68 on two deterministic splits (age alone: 0.65 and
+//   0.63). The odds rise monotonically with age — 3% of protocols under 180 days record a
+//   token, 25% of those over 1,100 days do — and by category, from 3% (Risk Curators) to 48%
+//   (Lending). The odds are a peer benchmark, not a forecast: an old protocol with no token
+//   has survived this long without listing, so the rate is what its peers record, not a
+//   promise it will list.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -63,16 +76,8 @@ export interface ModelConstants {
   shrink_k: number;
   /** Smallest category size that earns its own median; smaller categories use the global curve. */
   min_category_n: number;
-  /** Weight of the seven-day growth tilt. */
-  growth_weight: number;
-  growth_floor: number;
-  growth_cap: number;
-  maturity_floor: number;
-  maturity_range: number;
-  maturity_days: number;
+  /** Age used for the token odds when a protocol records no listing date. */
   unknown_age_days: number;
-  /** Flat stated assumption: the chance a pre-token protocol ever lists a token. */
-  token_odds: number;
   /** Flat stated assumption: the share of the token's value the public float holds. */
   own_token_share: number;
   /** Stated assumption: the share of the implied value an airdrop pays out. */
@@ -81,27 +86,32 @@ export interface ModelConstants {
   airdrop_farmers: number;
   /** Opportunity cost of capital, per year, used to net a farm plan. */
   capital_apr: number;
+  /** Shrinkage weight of the global has-token rate when blending a category rate (n / (n + k)). */
+  odds_shrink_k: number;
+  /** L2 penalty on the token-odds logistic's age coefficient (the intercept is unpenalised). */
+  odds_l2: number;
+  /** Gradient-descent iterations for the token-odds logistic (fixed, deterministic). */
+  odds_iterations: number;
+  /** Gradient-descent step size for the token-odds logistic. */
+  odds_lr: number;
 }
 
 export const MODEL: ModelConstants = {
   shrink_k: 10,
   min_category_n: 3,
-  growth_weight: 0.25,
-  growth_floor: -60,
-  growth_cap: 120,
-  maturity_floor: 0.7,
-  maturity_range: 0.3,
-  maturity_days: 1095,
   unknown_age_days: 365,
-  token_odds: 0.35,
   own_token_share: 0.2,
   airdrop_share: 0.1,
   airdrop_farmers: 1000,
   capital_apr: 0.05,
+  odds_shrink_k: 5,
+  odds_l2: 1.0,
+  odds_iterations: 3000,
+  odds_lr: 0.1,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -119,15 +129,30 @@ export const VALIDATION = {
   global_a: 6.9646,
   global_b: 0.5223,
   global_r2: 0.194,
-  loo_median_log: 1.22,
+  loo_median_log: 1.24,
   loo_median_x: 3.4,
-  loo_p80_log: 2.44,
+  loo_p80_log: 2.45,
   loo_p90_log: 3.48,
-  walk_forward_median_log: 1.12,
-  walk_forward_median_x: 3.1,
+  loo_spearman: 0.41,
+  loo_spearman_global: 0.4,
+  walk_forward_median_log: 1.03,
+  walk_forward_median_x: 2.8,
   walk_forward_fit_n: 64,
   walk_forward_test_n: 31,
-  odds_auc_test: 0.45,
+  odds_auc_age_split1: 0.65,
+  odds_auc_age_split2: 0.63,
+  odds_auc_agecat_split1: 0.73,
+  odds_auc_agecat_split2: 0.68,
+  odds_global_rate: 0.27,
+  odds_w0: -1.055,
+  odds_w1: 0.6093,
+  odds_mu_age: 630.3,
+  odds_sd_age: 450.4,
+  odds_population: 470,
+  growth_slope: -0.0424,
+  growth_loo_spearman_gain: 0.005,
+  growth_walk_forward_median: 1.12,
+  age_slope_loo_spearman: 0.39,
   category_spread_x: 27,
 };
 
@@ -168,11 +193,8 @@ export interface BoardRow {
   implied_value_usd: number;
   model: {
     base_multiple: number;
-    growth_pct: number;
-    growth_multiplier: number;
-    maturity_multiplier: number;
-    age_days: number | null;
     token_odds: number;
+    age_days: number | null;
     own_token_share: number;
     rank_band_low: number;
     rank_band_high: number;
@@ -198,8 +220,6 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
-  growth_multiplier: number;
-  maturity_multiplier: number;
   base_multiple: number;
   token_odds: number;
   own_token_share: number;
@@ -248,11 +268,6 @@ export class SnapshotError extends Error {
 }
 
 const DAY_MS = 86_400_000;
-
-/** A finite number, else `fallback`. */
-function finite(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
 
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
@@ -347,24 +362,109 @@ function logCategoryMultiple(p: SnapshotProtocol, fit: FittedModel, model: Model
   return (entry.n * entry.logMed + model.shrink_k * global) / (entry.n + model.shrink_k);
 }
 
-/** The three multipliers and the implied value one protocol gets under `model` and `fit`. */
+/** The fitted token-odds model: a logistic on age plus per-category has-token rates. */
+export interface OddsModel {
+  /** Intercept of the age logistic (standardised age). */
+  w0: number;
+  /** Age coefficient of the age logistic (standardised age). */
+  w1: number;
+  /** Mean age of the odds population, in days. */
+  mu_age: number;
+  /** Standard deviation of the age of the odds population, in days. */
+  sd_age: number;
+  /** The population's overall has-token rate. */
+  global_rate: number;
+  /** Per-category has-token rate, shrunk toward the global rate. */
+  rates: Map<string, number>;
+  /** How many protocols the odds fit ran on. */
+  n: number;
+}
+
+/** The logistic function, clamped so it never overflows. */
+function sigmoid(z: number): number {
+  const c = Math.max(-30, Math.min(30, z));
+  return 1 / (1 + Math.exp(-c));
+}
+
+/**
+ * The token odds, fitted at run time from the snapshot's own record: the population is every
+ * protocol that either trades (a positive market cap) or records no token at all. A logistic
+ * on standardised age is fitted by fixed-iteration gradient descent (deterministic: it starts
+ * at zero and always runs the same number of steps), and each category's has-token rate is
+ * shrunk toward the global rate. The odds are a peer benchmark — the share of protocols of
+ * this age and category that record a token — not a forecast that this protocol will list.
+ */
+export function fitOddsModel(snapshot: Snapshot, model: ModelConstants = MODEL): OddsModel {
+  const pop = snapshot.protocols.filter(
+    (p) =>
+      (p.mcap_usd !== null && p.mcap_usd > 0) ||
+      (p.mcap_usd === null && p.gecko_id === null && p.symbol === null),
+  );
+  const ages = pop.map((p) => ageDays(snapshot.as_of, p.listed_at) ?? model.unknown_age_days);
+  const mu = ages.reduce((s, v) => s + v, 0) / ages.length;
+  const sd = Math.sqrt(ages.reduce((s, v) => s + (v - mu) * (v - mu), 0) / ages.length) || 1;
+  const xs = ages.map((v) => (v - mu) / sd);
+  const ys = pop.map((p) => (p.mcap_usd !== null && p.mcap_usd > 0 ? 1 : 0));
+  let w0 = 0;
+  let w1 = 0;
+  for (let it = 0; it < model.odds_iterations; it++) {
+    let g0 = 0;
+    let g1 = 0;
+    for (let i = 0; i < pop.length; i++) {
+      const e = sigmoid(w0 + w1 * xs[i]!) - ys[i]!;
+      g0 += e;
+      g1 += e * xs[i]!;
+    }
+    w0 -= model.odds_lr * (g0 / pop.length);
+    w1 -= model.odds_lr * (g1 / pop.length + (model.odds_l2 * w1) / pop.length);
+  }
+  let has = 0;
+  const byCat = new Map<string, { n: number; h: number }>();
+  for (const p of pop) {
+    const c = p.category ?? '(none)';
+    const e = byCat.get(c);
+    if (e === undefined) byCat.set(c, { n: 1, h: p.mcap_usd !== null && p.mcap_usd > 0 ? 1 : 0 });
+    else {
+      e.n += 1;
+      if (p.mcap_usd !== null && p.mcap_usd > 0) e.h += 1;
+    }
+    if (p.mcap_usd !== null && p.mcap_usd > 0) has += 1;
+  }
+  const globalRate = has / pop.length;
+  const rates = new Map<string, number>();
+  for (const [c, e] of byCat.entries()) {
+    rates.set(c, (e.h + model.odds_shrink_k * globalRate) / (e.n + model.odds_shrink_k));
+  }
+  return { w0, w1, mu_age: mu, sd_age: sd, global_rate: globalRate, rates, n: pop.length };
+}
+
+/** One protocol's token odds under the fitted model: the age logistic plus its category offset. */
+export function tokenOdds(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  odds: OddsModel,
+  model: ModelConstants = MODEL,
+): number {
+  const age = ageDays(asOf, protocol.listed_at) ?? model.unknown_age_days;
+  const base = odds.w0 + odds.w1 * ((age - odds.mu_age) / odds.sd_age);
+  const rate = odds.rates.get(protocol.category ?? '(none)') ?? odds.global_rate;
+  return sigmoid(base + Math.log(rate / odds.global_rate));
+}
+
+/** The multipliers and the implied value one protocol gets under `model`, `fit` and `odds`. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fit: FittedModel,
+  odds: OddsModel,
   model: ModelConstants,
-): { implied: number; launch: number; multiple: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+): { implied: number; launch: number; multiple: number; tokenOdds: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
-  const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult =
-    model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const multiple = Math.exp(logCategoryMultiple(protocol, fit, model));
-  const launch = protocol.tvl_usd * multiple * growthMult * maturityMult;
-  const implied = Math.max(1, Math.round(launch * model.token_odds * model.own_token_share));
-  return { implied, launch, multiple, growthPct, growthMult, maturityMult, age };
+  const launch = protocol.tvl_usd * multiple;
+  const oddsValue = tokenOdds(protocol, asOf, odds, model);
+  const implied = Math.max(1, Math.round(launch * oddsValue * model.own_token_share));
+  return { implied, launch, multiple, tokenOdds: oddsValue, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -400,7 +500,7 @@ interface ScoredRow {
 }
 
 /** The chosen protocols scored and ranked, strongest first (ties broken by slug, deterministic). */
-function scoreRows(snapshot: Snapshot, fit: FittedModel, model: ModelConstants): ScoredRow[] {
+function scoreRows(snapshot: Snapshot, fit: FittedModel, odds: OddsModel, model: ModelConstants): ScoredRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   for (const slug of snapshot.watchlist) {
@@ -414,16 +514,21 @@ function scoreRows(snapshot: Snapshot, fit: FittedModel, model: ModelConstants):
   for (const p of early) chosen.set(p.slug, p);
   const scored: ScoredRow[] = [...chosen.values()].map((p) => ({
     slug: p.slug,
-    implied: impliedValue(p, snapshot.as_of, fit, model).implied,
+    implied: impliedValue(p, snapshot.as_of, fit, odds, model).implied,
   }));
   scored.sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   return scored;
 }
 
-/** Rank bands from bootstrap refits: each row's 10th and 90th percentile rank over refits. */
-function rankBands(snapshot: Snapshot, fit: FittedModel, model: ModelConstants): Map<string, [number, number]> {
+/**
+ * Rank bands from bootstrap refits: each row's 10th and 90th percentile rank over refits.
+ * The refits resample the traded comps and refit the size curve and category multiples; the
+ * token-odds fit is held fixed — it is estimated on 470 protocols and moves little between
+ * refits, so refitting it 200 times would cost minutes for bands that barely change.
+ */
+function rankBands(snapshot: Snapshot, fit: FittedModel, odds: OddsModel, model: ModelConstants): Map<string, [number, number]> {
   const comps = cleanComps(snapshot);
-  const base = scoreRows(snapshot, fit, model);
+  const base = scoreRows(snapshot, fit, odds, model);
   const ranks = new Map<string, number[]>();
   for (const r of base) ranks.set(r.slug, []);
   const rand = mulberry32(BOOTSTRAP_SEED);
@@ -431,7 +536,7 @@ function rankBands(snapshot: Snapshot, fit: FittedModel, model: ModelConstants):
     const sample: SnapshotProtocol[] = [];
     for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rand() * comps.length)]!);
     const refit = fitFromComps(sample);
-    const scored = scoreRows(snapshot, refit, model);
+    const scored = scoreRows(snapshot, refit, odds, model);
     scored.forEach((r, i) => ranks.get(r.slug)!.push(i + 1));
   }
   const bands = new Map<string, [number, number]>();
@@ -589,12 +694,13 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, verdict: Farm
 /** The protocols the board ranks, strongest first, with ranks 1..n and farm plans. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const fit = fitFromComps(cleanComps(snapshot));
-  const scored = scoreRows(snapshot, fit, model);
-  const bands = rankBands(snapshot, fit, model);
+  const odds = fitOddsModel(snapshot, model);
+  const scored = scoreRows(snapshot, fit, odds, model);
+  const bands = rankBands(snapshot, fit, odds, model);
   const index = bySlug(snapshot.protocols);
   return scored.map((s, i) => {
     const p = index.get(s.slug)!;
-    const v = impliedValue(p, snapshot.as_of, fit, model);
+    const v = impliedValue(p, snapshot.as_of, fit, odds, model);
     const verdict = farmVerdict(v.implied, capitalFor(p), holdDaysFor(v.age), model);
     const band = bands.get(s.slug) ?? [i + 1, i + 1];
     return {
@@ -614,11 +720,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       implied_value_usd: v.implied,
       model: {
         base_multiple: round4(v.multiple),
-        growth_pct: v.growthPct,
-        growth_multiplier: round4(v.growthMult),
-        maturity_multiplier: round4(v.maturityMult),
+        token_odds: round4(v.tokenOdds),
         age_days: v.age,
-        token_odds: model.token_odds,
         own_token_share: model.own_token_share,
         rank_band_low: band[0],
         rank_band_high: band[1],
@@ -664,8 +767,6 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
-    growth_multiplier: row.model.growth_multiplier,
-    maturity_multiplier: row.model.maturity_multiplier,
     base_multiple: row.model.base_multiple,
     token_odds: row.model.token_odds,
     own_token_share: row.model.own_token_share,
