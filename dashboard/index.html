@@ -3,12 +3,76 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by fitted implied value</title>
+<title>Token Radar — pre-token protocols, ranked by implied value</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<header class="top">
+  <div>
+    <h1>TOKEN RADAR</h1>
+    <p class="sub">Pre-token protocols, ranked by what a token would be worth if the protocol's record stayed as it is. Every figure below is computed from the snapshot, and every test the model passed or failed is printed beside it.</p>
+    <p class="meta" id="meta"></p>
+  </div>
+  <div class="key">
+    <div><span class="k">Snapshot</span><b id="k-asof"></b></div>
+    <div><span class="k">Watchlist floor</span><b id="k-floor"></b></div>
+    <div><span class="k">Rows</span><b id="k-rows"></b></div>
+  </div>
+</header>
+
+<section class="kpis" id="kpis"></section>
+
+<section class="strip" id="accounting"></section>
+<section class="strip ok" id="integrity"></section>
+
+<section class="evidence">
+  <h2>OUT-OF-SAMPLE EVIDENCE</h2>
+  <p class="note">The model was fitted on traded protocols and tested on ones it never saw. A term is kept only when it survives both blind tests; a term that fails is listed with its numbers and left out.</p>
+  <div class="tables">
+    <div>
+      <h3>Value model, term by term</h3>
+      <table id="t-terms"><thead><tr><th>Term</th><th>Leave-one-out miss</th><th>Walk-forward miss</th><th></th></tr></thead><tbody></tbody></table>
+      <p class="note" id="t-flat"></p>
+    </div>
+    <div>
+      <h3>Token odds, 5-fold cross-validation</h3>
+      <table id="t-odds"><thead><tr><th>Measure</th><th>Model</th><th>Base rate</th></tr></thead><tbody></tbody></table>
+      <p class="note" id="t-odds-note"></p>
+      <h3>Range honesty</h3>
+      <table id="t-range"><thead><tr><th>Band</th><th>Claimed</th><th>Actually inside</th></tr></thead><tbody></tbody></table>
+      <p class="note" id="t-sigma"></p>
+    </div>
+  </div>
+</section>
+
+<section class="board">
+  <h2>THE BOARD</h2>
+  <div class="controls">
+    <input id="q" type="search" placeholder="Search name or slug" aria-label="Search">
+    <div class="tabs" id="tabs">
+      <button data-v="ALL" class="on">All</button>
+      <button data-v="FARM">Farm</button>
+      <button data-v="THIN">Thin</button>
+      <button data-v="SKIP">Skip</button>
+    </div>
+    <label>Min TVL <select id="minTvl"><option value="0">any</option><option value="50000000">$50M</option><option value="100000000">$100M</option><option value="500000000">$500M</option></select></label>
+    <label>Min odds <select id="minOdds"><option value="0">any</option><option value="0.5">50%</option><option value="0.7">70%</option><option value="0.85">85%</option></select></label>
+    <label>Sort <select id="sort"><option value="implied">implied value</option><option value="tvl">TVL</option><option value="odds">token odds</option><option value="net">farm net</option></select></label>
+    <button id="exportCsv" type="button">CSV</button>
+    <button id="exportJson" type="button">JSON</button>
+  </div>
+  <p class="count" id="count"></p>
+  <div class="scroll">
+  <table id="board"><thead><tr><th>#</th><th>Rank band</th><th>Protocol</th><th>TVL</th><th>7d</th><th>Age</th><th>Token odds</th><th>If it launches</th><th>Implied value</th><th>Verdict · net · net/h</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<section class="detail" id="detail" hidden></section>
+
+<footer>
+  <p><b>How to read this page.</b> Implied value is the entry's own claim, never make.fun's: launch value (what the size curve and category effects say a token would be worth, fitted on traded protocols) times token odds (the chance a protocol like this one records a token). A protocol is said to <i>record</i> no token when its DefiLlama record carries none; that is not proof it has none. Farm nets assume a $10,000 deposit held 90 days and a 7% drop share; the T-bill benchmark on the same deposit is $111 over 90 days. Nothing here is a hardcoded list of names: rerun the program and every number recomputes from the snapshot.</p>
+  <p class="meta" id="foot"></p>
+</footer>
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
